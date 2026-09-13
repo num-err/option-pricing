@@ -1,0 +1,32 @@
+[project]
+name = "option-pricing"
+version = "0.1.0"
+description = "European and American option pricing: closed-form Black-Scholes, CRR binomial trees, Monte Carlo with variance reduction, and implied-volatility surfaces."
+readme = "README.md"
+authors = [
+    { name = "numerr", email = "nahmed3@swarthmore.edu" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.3",
+    "pandas>=3.0.5",
+    "scipy>=1.18.1",
+    "yfinance>=1.7.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "pricing"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
