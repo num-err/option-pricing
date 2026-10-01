@@ -28,5 +28,6 @@ addopts = "-ra"
 
 [dependency-groups]
 dev = [
+    "pybind11>=3.1.0",
     "pytest>=9.1.1",
 ]

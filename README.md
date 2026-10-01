@@ -36,11 +36,83 @@ scripts/
   fetch_chain.py         pulls a live SPY chain via yfinance -> data/
   plot_smile.py           builds figures/smile.png from the cached chain
 tests/                    one file per pricing module, plus test_parity.py
+cpp/                      C++ Monte Carlo engine — see below
+benchmarks/               numpy vs. C++ throughput benchmark
 ```
 
 `src/pricing/*` is intentionally pure — no I/O, no plotting, numpy in and
 numpy out — so every pricing function is trivial to unit test and the
 network/plotting code in `scripts/` stays separate from the math.
+
+## C++ Monte Carlo engine
+
+`src/pricing/monte_carlo.py` is the reference implementation: validated,
+readable, numpy-vectorized. `cpp/` is a from-scratch second implementation of
+the same three estimators (naive, antithetic, control variate) in C++,
+exposed back to Python as a `pricing_cpp` extension module via
+[pybind11](https://github.com/pybind/pybind11), plus thread-parallel
+(`std::thread`) variants of naive and antithetic that split paths across
+`std::thread::hardware_concurrency()` threads and combine per-thread Welford
+moments with Chan et al.'s parallel-variance formula.
+
+```
+cpp/
+  include/pricing/monte_carlo.hpp   public API
+  src/monte_carlo.cpp               single- and multi-threaded estimators
+  src/bindings.cpp                  pybind11 module definition
+  tests/test_monte_carlo.cpp        standalone correctness check (no Python)
+```
+
+### Build
+
+```bash
+uv sync --group dev                              # installs pybind11
+uv run cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
+uv run cmake --build cpp/build -j
+uv run ctest --test-dir cpp/build --output-on-failure   # correctness
+uv run python benchmarks/bench_monte_carlo.py            # throughput
+```
+
+### What the benchmark found
+
+The first version simply ported the Python loop structure to C++
+(`std::mt19937_64` + `std::normal_distribution`, one path per iteration), and
+it did **not** beat numpy — it ran at roughly 0.4–0.7x numpy's speed at
+every path count tested. Profiling isolated why: `std::normal_distribution`
+on libc++ costs about 6x a raw `mt19937_64` draw (~12ns vs ~1.9ns per call,
+measured directly), because it draws from the rejection-based Marsaglia
+polar method. numpy's `Generator.standard_normal`, by contrast, uses the
+Ziggurat algorithm, which only falls back to a transcendental function in
+its rare tail case — so numpy's RNG alone is already close to as fast as
+this naive C++ loop, before even counting numpy's array-level vectorization.
+
+That ruled out "C++ is faster because it's C++" and pointed at the one
+advantage numpy's single-threaded `Generator` genuinely can't match: Monte
+Carlo path simulation is embarrassingly parallel. Splitting the same loop
+across `std::thread::hardware_concurrency()` threads (8 on the machine these
+numbers were measured on) is where the real, reproducible win is:
+
+| estimator | n_paths | numpy | C++ (1 thread) | C++ (8 threads) | speedup vs. numpy |
+|---|---:|---:|---:|---:|---:|
+| naive | 10,000,000 | 0.192s | 0.288s (0.7x) | 0.060s | 2.6–3.2x |
+| antithetic | 10,000,000 | 0.151s | 0.217s (0.7x) | 0.031s | 4.6–6.9x |
+| control variate | 10,000,000 | 0.280s | 0.607s (0.5x) | *(not parallelized yet)* | — |
+
+(Run `benchmarks/bench_monte_carlo.py` yourself for current numbers —
+timings are single-run wall-clock on one machine, not averaged over
+repetitions, and will vary with core count and load. `control_variate`'s
+two-pass replay-the-same-stream design wasn't threaded in this pass; that's
+the natural next step.)
+
+Both C++ paths are checked against the closed-form Black-Scholes price in
+units of their own standard error (the same statistical test
+`tests/test_monte_carlo.py` uses), not against numpy's output directly —
+two independent random estimators of the same quantity will disagree by a
+few standard errors as a matter of course, so bitwise or tight-tolerance
+agreement between them would be the wrong thing to assert.
+
+Black-Scholes, the binomial tree, and implied-vol solving haven't been
+ported to C++ yet; `src/pricing/` is still the only implementation of those.
 
 ## The smile
 
