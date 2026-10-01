@@ -49,20 +49,30 @@ network/plotting code in `scripts/` stays separate from the math.
 `src/pricing/*.py` are the reference implementations: validated, readable,
 numpy-vectorized. `cpp/` is a from-scratch second implementation in C++,
 exposed back to Python as a `pricing_cpp` extension module via
-[pybind11](https://github.com/pybind/pybind11). Two modules are ported so
-far — Monte Carlo and Black-Scholes — and each surfaces a different kind of
-performance lesson, documented below rather than asserted.
+[pybind11](https://github.com/pybind/pybind11). All four pricing modules are
+now ported — Monte Carlo, Black-Scholes, the binomial tree, and implied-vol
+solving — and each surfaces a different kind of performance or engineering
+lesson, documented below rather than asserted.
 
 ```
 cpp/
   include/pricing/types.hpp         shared OptionType enum
   include/pricing/monte_carlo.hpp   Monte Carlo public API
   include/pricing/black_scholes.hpp Black-Scholes public API
+  include/pricing/binomial.hpp      binomial tree public API
+  include/pricing/root_finding.hpp  from-scratch Brent's method
+  include/pricing/implied_vol.hpp   implied-vol public API
   src/monte_carlo.cpp               single- and multi-threaded estimators
   src/black_scholes.cpp             closed-form price + analytic Greeks
+  src/binomial.cpp                  CRR tree, European and American exercise
+  src/root_finding.cpp              Brent's method root-finder
+  src/implied_vol.cpp               no-arbitrage bounds + Brent inversion
   src/bindings.cpp                  pybind11 module definition
   tests/test_monte_carlo.cpp        standalone correctness check (no Python)
   tests/test_black_scholes.cpp      standalone correctness check (no Python)
+  tests/test_binomial.cpp           standalone correctness check (no Python)
+  tests/test_root_finding.cpp       standalone correctness check (no Python)
+  tests/test_implied_vol.cpp        standalone correctness check (no Python)
 ```
 
 ### Build
@@ -71,7 +81,7 @@ cpp/
 uv sync --group dev                              # installs pybind11
 uv run cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
 uv run cmake --build cpp/build -j
-uv run ctest --test-dir cpp/build --output-on-failure   # correctness (both modules)
+uv run ctest --test-dir cpp/build --output-on-failure   # correctness (all 5 modules)
 uv run python benchmarks/bench_monte_carlo.py            # Monte Carlo throughput
 uv run python benchmarks/bench_black_scholes.py          # Black-Scholes throughput
 ```
@@ -140,8 +150,43 @@ as a real integration would use — batch a whole array across the pybind11
 boundary in one call instead of one call per option — which is a natural
 next step, not yet implemented.
 
-The binomial tree and implied-vol solving haven't been ported to C++ yet;
-`src/pricing/` is still the only implementation of those.
+### Binomial tree: a straightforward win, no surprises
+
+`cpp/src/binomial.cpp` ports the CRR lattice and its backward induction
+directly — a `std::vector<double>` of node values updated in place,
+ascending by index, which is safe here because each node's new value only
+depends on the two node values below it from the previous layer, neither of
+which has been overwritten yet when it's read (`cpp/include/pricing/binomial.hpp`
+spells out the argument). Unlike Monte Carlo, there's no RNG to be the
+bottleneck and no array-allocation-per-call for numpy to pay; this is a
+plain nested loop against a plain nested loop, and it behaves exactly as
+naively expected — `cpp/tests/test_binomial.cpp` reproduces every case from
+`tests/test_binomial.py` (European convergence to Black-Scholes, American
+puts exceeding European, the q=0 "never exercise a call early" identity,
+American calls exceeding European under dividends, the sigma=0 rejection)
+and all pass with no numerical surprises worth a benchmark table. Not every
+port needs a plot twist; this one is here mainly to complete the engine.
+
+### Implied vol: writing Brent's method instead of calling it
+
+`src/pricing/implied_vol.py` leans on `scipy.optimize.brentq`. The C++ side
+has no scipy to call, so `cpp/src/root_finding.cpp` implements Brent's
+method from scratch — bisection, the secant method, and inverse quadratic
+interpolation, falling back to bisection whenever a trial step would land
+outside the bracket or fail to shrink it fast enough. `cpp/tests/test_root_finding.cpp`
+validates the root-finder in isolation first (recovering √2, the Dottie
+number `cos(x) = x`, and a cubic root away from the bracket midpoint) before
+`cpp/src/implied_vol.cpp` relies on it to invert `black_scholes::price` —
+same no-arbitrage bounds, same `ArbitrageViolation` exception (registered
+with pybind11 via `py::register_exception` so it still subclasses `ValueError`
+in Python, matching the Python module's own `ArbitrageViolation(ValueError)`),
+same round-trip recovery checked in `cpp/tests/test_implied_vol.cpp` against
+the identical parameter grid `tests/test_implied_vol.py` uses. Both
+implementations agree to float64 precision, same as Black-Scholes.
+
+`src/pricing/surface.py` (chain-filtering and smile-construction) stays
+Python-only — it's I/O-adjacent glue over a pandas DataFrame, not a
+numerical kernel, so there's nothing there that would benefit from a port.
 
 ## The smile
 

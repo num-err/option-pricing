@@ -11,7 +11,13 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 # Core pricing kernels, independent of Python.
 find_package(Threads REQUIRED)
-add_library(pricing_core STATIC src/monte_carlo.cpp src/black_scholes.cpp)
+add_library(pricing_core STATIC
+  src/monte_carlo.cpp
+  src/black_scholes.cpp
+  src/binomial.cpp
+  src/root_finding.cpp
+  src/implied_vol.cpp
+)
 target_include_directories(pricing_core PUBLIC include)
 target_link_libraries(pricing_core PUBLIC Threads::Threads)
 
@@ -38,3 +44,15 @@ add_test(NAME monte_carlo COMMAND test_monte_carlo)
 add_executable(test_black_scholes tests/test_black_scholes.cpp)
 target_link_libraries(test_black_scholes PRIVATE pricing_core)
 add_test(NAME black_scholes COMMAND test_black_scholes)
+
+add_executable(test_binomial tests/test_binomial.cpp)
+target_link_libraries(test_binomial PRIVATE pricing_core)
+add_test(NAME binomial COMMAND test_binomial)
+
+add_executable(test_root_finding tests/test_root_finding.cpp)
+target_link_libraries(test_root_finding PRIVATE pricing_core)
+add_test(NAME root_finding COMMAND test_root_finding)
+
+add_executable(test_implied_vol tests/test_implied_vol.cpp)
+target_link_libraries(test_implied_vol PRIVATE pricing_core)
+add_test(NAME implied_vol COMMAND test_implied_vol)
