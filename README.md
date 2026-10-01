@@ -36,31 +36,33 @@ scripts/
   fetch_chain.py         pulls a live SPY chain via yfinance -> data/
   plot_smile.py           builds figures/smile.png from the cached chain
 tests/                    one file per pricing module, plus test_parity.py
-cpp/                      C++ Monte Carlo engine — see below
-benchmarks/               numpy vs. C++ throughput benchmark
+cpp/                      C++ pricing engine — see below
+benchmarks/               numpy vs. C++ throughput benchmarks
 ```
 
 `src/pricing/*` is intentionally pure — no I/O, no plotting, numpy in and
 numpy out — so every pricing function is trivial to unit test and the
 network/plotting code in `scripts/` stays separate from the math.
 
-## C++ Monte Carlo engine
+## C++ pricing engine
 
-`src/pricing/monte_carlo.py` is the reference implementation: validated,
-readable, numpy-vectorized. `cpp/` is a from-scratch second implementation of
-the same three estimators (naive, antithetic, control variate) in C++,
+`src/pricing/*.py` are the reference implementations: validated, readable,
+numpy-vectorized. `cpp/` is a from-scratch second implementation in C++,
 exposed back to Python as a `pricing_cpp` extension module via
-[pybind11](https://github.com/pybind/pybind11), plus thread-parallel
-(`std::thread`) variants of naive and antithetic that split paths across
-`std::thread::hardware_concurrency()` threads and combine per-thread Welford
-moments with Chan et al.'s parallel-variance formula.
+[pybind11](https://github.com/pybind/pybind11). Two modules are ported so
+far — Monte Carlo and Black-Scholes — and each surfaces a different kind of
+performance lesson, documented below rather than asserted.
 
 ```
 cpp/
-  include/pricing/monte_carlo.hpp   public API
+  include/pricing/types.hpp         shared OptionType enum
+  include/pricing/monte_carlo.hpp   Monte Carlo public API
+  include/pricing/black_scholes.hpp Black-Scholes public API
   src/monte_carlo.cpp               single- and multi-threaded estimators
+  src/black_scholes.cpp             closed-form price + analytic Greeks
   src/bindings.cpp                  pybind11 module definition
   tests/test_monte_carlo.cpp        standalone correctness check (no Python)
+  tests/test_black_scholes.cpp      standalone correctness check (no Python)
 ```
 
 ### Build
@@ -69,11 +71,12 @@ cpp/
 uv sync --group dev                              # installs pybind11
 uv run cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
 uv run cmake --build cpp/build -j
-uv run ctest --test-dir cpp/build --output-on-failure   # correctness
-uv run python benchmarks/bench_monte_carlo.py            # throughput
+uv run ctest --test-dir cpp/build --output-on-failure   # correctness (both modules)
+uv run python benchmarks/bench_monte_carlo.py            # Monte Carlo throughput
+uv run python benchmarks/bench_black_scholes.py          # Black-Scholes throughput
 ```
 
-### What the benchmark found
+### Monte Carlo: what the benchmark found
 
 The first version simply ported the Python loop structure to C++
 (`std::mt19937_64` + `std::normal_distribution`, one path per iteration), and
@@ -111,8 +114,34 @@ two independent random estimators of the same quantity will disagree by a
 few standard errors as a matter of course, so bitwise or tight-tolerance
 agreement between them would be the wrong thing to assert.
 
-Black-Scholes, the binomial tree, and implied-vol solving haven't been
-ported to C++ yet; `src/pricing/` is still the only implementation of those.
+### Black-Scholes: a different kind of result
+
+`cpp/src/black_scholes.cpp` ports `price`/`delta`/`gamma`/`vega`/`theta`/`rho`
+plus a `greeks()` that computes all six off one shared d1/d2, including the
+same `T == 0` / `sigma == 0` degenerate-case handling as the Python version.
+Because the formula is deterministic closed-form (not sampled), the C++ and
+Python outputs agree to float64 precision, not just "within a few standard
+errors" — `cpp/tests/test_black_scholes.cpp` checks analytic Greeks against
+finite differences of price() across a 2,430-point parameter grid (mirroring
+`tests/test_black_scholes.py`), both option types, plus the degenerate-input
+and deep ITM/OTM limit cases.
+
+Black-Scholes has no loop to parallelize — it's O(1) per option — so the only
+way to make the workload large is to price *many* options, which is what a
+real vol-surface build or risk run actually does. `benchmarks/bench_black_scholes.py`
+prices a chain of random strikes one option at a time through the pybind11
+boundary and compares it to numpy pricing the whole chain in one vectorized
+call. **numpy wins here, by about 4x at 100,000 options** — the per-option
+Python→C++ call overhead dominates the compiled arithmetic underneath it.
+This is the inverse of the Monte Carlo lesson: there, numpy paid an
+allocation/RNG cost that a tight C++ loop avoided; here, C++ pays a
+marshalling cost numpy's single bulk call avoids. The fix is the same shape
+as a real integration would use — batch a whole array across the pybind11
+boundary in one call instead of one call per option — which is a natural
+next step, not yet implemented.
+
+The binomial tree and implied-vol solving haven't been ported to C++ yet;
+`src/pricing/` is still the only implementation of those.
 
 ## The smile
 

@@ -16,9 +16,9 @@
 
 #include <cstdint>
 
-namespace pricing {
+#include "pricing/types.hpp"
 
-enum class OptionType { Call, Put };
+namespace pricing {
 
 struct MCResult {
     double price;

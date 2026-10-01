@@ -11,7 +11,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 # Core pricing kernels, independent of Python.
 find_package(Threads REQUIRED)
-add_library(pricing_core STATIC src/monte_carlo.cpp)
+add_library(pricing_core STATIC src/monte_carlo.cpp src/black_scholes.cpp)
 target_include_directories(pricing_core PUBLIC include)
 target_link_libraries(pricing_core PUBLIC Threads::Threads)
 
@@ -28,8 +28,13 @@ find_package(pybind11 CONFIG REQUIRED)
 pybind11_add_module(pricing_cpp src/bindings.cpp)
 target_link_libraries(pricing_cpp PRIVATE pricing_core)
 
-# Standalone correctness test (no Python involved), run via ctest.
+# Standalone correctness tests (no Python involved), run via ctest.
 enable_testing()
+
 add_executable(test_monte_carlo tests/test_monte_carlo.cpp)
 target_link_libraries(test_monte_carlo PRIVATE pricing_core)
 add_test(NAME monte_carlo COMMAND test_monte_carlo)
+
+add_executable(test_black_scholes tests/test_black_scholes.cpp)
+target_link_libraries(test_black_scholes PRIVATE pricing_core)
+add_test(NAME black_scholes COMMAND test_black_scholes)
